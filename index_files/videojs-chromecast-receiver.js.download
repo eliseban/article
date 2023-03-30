@@ -1,0 +1,2767 @@
+/*! @name @brightcove/videojs-chromecast-receiver @version 2.4.0 @license UNLICENSED */
+(function (global, factory) {
+	typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory(require('video.js')) :
+	typeof define === 'function' && define.amd ? define(['video.js'], factory) :
+	(global = typeof globalThis !== 'undefined' ? globalThis : global || self, global.videojsChromecastReceiver = factory(global.videojs));
+}(this, (function (videojs) { 'use strict';
+
+	function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+	var videojs__default = /*#__PURE__*/_interopDefaultLegacy(videojs);
+
+	function createCommonjsModule(fn, basedir, module) {
+		return module = {
+		  path: basedir,
+		  exports: {},
+		  require: function (path, base) {
+	      return commonjsRequire(path, (base === undefined || base === null) ? module.path : base);
+	    }
+		}, fn(module, module.exports), module.exports;
+	}
+
+	function commonjsRequire () {
+		throw new Error('Dynamic requires are not currently supported by @rollup/plugin-commonjs');
+	}
+
+	var assertThisInitialized = createCommonjsModule(function (module) {
+	  function _assertThisInitialized(self) {
+	    if (self === void 0) {
+	      throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
+	    }
+
+	    return self;
+	  }
+
+	  module.exports = _assertThisInitialized;
+	  module.exports["default"] = module.exports, module.exports.__esModule = true;
+	});
+
+	var setPrototypeOf = createCommonjsModule(function (module) {
+	  function _setPrototypeOf(o, p) {
+	    module.exports = _setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) {
+	      o.__proto__ = p;
+	      return o;
+	    };
+
+	    module.exports["default"] = module.exports, module.exports.__esModule = true;
+	    return _setPrototypeOf(o, p);
+	  }
+
+	  module.exports = _setPrototypeOf;
+	  module.exports["default"] = module.exports, module.exports.__esModule = true;
+	});
+
+	var inheritsLoose = createCommonjsModule(function (module) {
+	  function _inheritsLoose(subClass, superClass) {
+	    subClass.prototype = Object.create(superClass.prototype);
+	    subClass.prototype.constructor = subClass;
+	    setPrototypeOf(subClass, superClass);
+	  }
+
+	  module.exports = _inheritsLoose;
+	  module.exports["default"] = module.exports, module.exports.__esModule = true;
+	});
+
+	var version = "2.4.0";
+
+	// small helpers to get a track list based on how tracks will be listed
+	// via chromecast. Which lists audio/text/video tracks in the same list.
+	var getFullTrackList = function getFullTrackList(textTracks, audioTracks) {
+	  if (textTracks === void 0) {
+	    textTracks = [];
+	  }
+
+	  if (audioTracks === void 0) {
+	    audioTracks = [];
+	  }
+
+	  var tracks = [];
+
+	  for (var i = 0; i < textTracks.length; i++) {
+	    var track = textTracks[i];
+
+	    if (track.kind === 'captions' || track.kind === 'subtitles') {
+	      tracks.push(track);
+	    }
+	  }
+
+	  for (var _i = 0; _i < audioTracks.length; _i++) {
+	    var _track = audioTracks[_i];
+	    tracks.push(_track);
+	  }
+
+	  return tracks;
+	};
+	var getActiveTrackIds = function getActiveTrackIds(textTracks, audioTracks) {
+	  var tracks = getFullTrackList(textTracks, audioTracks);
+	  var activeTrackIds = [];
+	  tracks.forEach(function (t, index) {
+	    // chromecast does not include an audio track in activeTrackIds when
+	    // it is the only audio track
+	    if (t.hasOwnProperty('mode') && t.mode === 'showing' || audioTracks.length > 1 && t.hasOwnProperty('enabled') && t.enabled) {
+	      activeTrackIds.push(index + 1);
+	    }
+	  });
+	  return activeTrackIds;
+	};
+
+	var Tech = videojs__default['default'].getTech('Tech');
+
+	var toTitleCase = function toTitleCase(string) {
+	  if (typeof string !== 'string') {
+	    return string;
+	  }
+
+	  return string.charAt(0).toUpperCase() + string.slice(1);
+	};
+	/**
+	 * This tech intercepts calls that would normally go to a
+	 * video element so that they can go to the remote chromecast player.
+	 * That way the videojs API works seemlessly.
+	 */
+
+
+	var ChromecastTech = /*#__PURE__*/function (_Tech) {
+	  inheritsLoose(ChromecastTech, _Tech);
+
+	  function ChromecastTech() {
+	    return _Tech.apply(this, arguments) || this;
+	  }
+
+	  var _proto = ChromecastTech.prototype;
+
+	  /**
+	   * The create element function for this tech
+	   *
+	   * @return {Element}
+	   *          The dom element for this tech
+	   */
+	  _proto.createEl = function createEl() {
+	    var _this = this;
+
+	    var el = _Tech.prototype.createEl.call(this, 'div', {}, {
+	      class: 'vjs-tech'
+	    });
+
+	    Object.defineProperty(el, 'buffered', {
+	      get: function get() {
+	        return _this.buffered();
+	      },
+	      set: function set(v) {
+	        _this.buffered(v);
+	      }
+	    });
+	    Object.defineProperty(el, 'src', {
+	      get: function get() {
+	        return _this.currentSrc();
+	      },
+	      set: function set(v) {
+	        _this.setSrc(v);
+	      }
+	    });
+	    Object.defineProperty(el, 'currentSrc', {
+	      get: function get() {
+	        return _this.currentSrc();
+	      },
+	      // cannot set current src
+	      set: function set(v) {}
+	    });
+
+	    el.load = function () {
+	      return _this.load();
+	    };
+
+	    return el;
+	  }
+	  /**
+	   * Due to the way the `loadTech_` function works, we cannot
+	   * actually pass options to the tech in the constructor. In place of that
+	   * we have this function which takes options and actually sets up the tech.
+	   *
+	   * @param {Object} options
+	   *        options to setup this tech with.
+	   *
+	   * @param {string} [options.poster]
+	   *        The url to the poster for the remote player.
+	   *
+	   * @param {ChromecastReceiver} options.plugin
+	   *        A reference to the chromecast receiver plugin.
+	   *
+	   * @param {number} [options.volume]
+	   *        The current player volume to set on the remote player.
+	   *
+	   * @param {boolean} [options.muted]
+	   *        The current value of muted to set on the remote player.
+	   */
+	  ;
+
+	  _proto.setup_ = function setup_(options) {
+	    var _this2 = this;
+
+	    this.onRemotePlayerEvent_ = videojs__default['default'].bind(this, this.onRemotePlayerEvent_);
+	    this.options_ = videojs__default['default'].mergeOptions(this.options_, options);
+	    this.plugin_ = this.options_.plugin;
+	    this.poster_ = this.options_.poster;
+	    this.log_('in tech');
+	    this.currentSrc_ = this.options_.source;
+	    this.on(this.textTracks(), 'change', this.setRemoteTrack_);
+	    this.on(this.audioTracks(), 'change', this.setRemoteTrack_); // make sure the progress bar is correct on ended
+
+	    this.on('ended', function () {
+	      this.trigger('durationchange');
+	      this.trigger('timeupdate');
+	      var controlBar = this.plugin_.player.controlBar;
+
+	      if (controlBar.progressControl && controlBar.progressControl.seekBar) {
+	        controlBar.progressControl.seekBar.update_(this.currentTime(), 1);
+	      }
+	    });
+	    this.ended_ = false;
+	    this.seeking_ = false;
+	    this.watchRemotePlayer_(); // save the duration in a cache
+	    // so that we can use it when the video is unloaded
+	    // on the receiver (it will report 0 duration at that point).
+
+	    this.on('timeupdate', function () {
+	      if (!_this2.remotePlayer_.duration) {
+	        return;
+	      }
+
+	      _this2.durationCache_ = _this2.remotePlayer_.duration;
+	    }); // sometimes when we get here the media is not yet loaded
+	    // if not that will be handled by an event on the remote player
+
+	    if (this.remotePlayer_ && this.remotePlayer_.isMediaLoaded) {
+	      this.setupRemotePlayer_();
+	    }
+	  }
+	  /**
+	   * handle audio, video, and text track list changes and make sure
+	   * that the correct track is selected on the remote player
+	   *
+	   * @listens TextTrackList#change
+	   *
+	   * @param {EventTarget~Event} [event]
+	   *        The event that caused this to run
+	   */
+	  ;
+
+	  _proto.setRemoteTrack_ = function setRemoteTrack_(event) {
+	    var activeTrackIds = getActiveTrackIds(this.textTracks(), this.audioTracks());
+	    var mediaSession = this.plugin_.castSession().getMediaSession();
+	    mediaSession.editTracksInfo(new window.chrome.cast.media.EditTracksInfoRequest(activeTrackIds));
+	  }
+	  /**
+	   * A wrapper around the plugin log function
+	   */
+	  ;
+
+	  _proto.log_ = function log_() {
+	    this.plugin_.log_.apply(this.plugin_, arguments);
+	  }
+	  /**
+	   * After the source is changed or initially when the tech is changed
+	   * we need to get the tracks that exist from the remote player
+	   * and add them to the local player. This function does that
+	   */
+	  ;
+
+	  _proto.setupTracks_ = function setupTracks_() {
+	    var _this3 = this;
+
+	    if (this.tracksSetup_) {
+	      return;
+	    }
+
+	    var mediaSession = this.plugin_.castMediaSession();
+
+	    if (!mediaSession || !mediaSession.media || !mediaSession.media.tracks) {
+	      return;
+	    }
+
+	    var remoteTracks = mediaSession.media.tracks;
+	    var localTracks = this.textTracks().length + this.audioTracks().length;
+
+	    if (localTracks === remoteTracks.length) {
+	      return;
+	    }
+
+	    this.tracksSetup_ = true;
+	    var activeTrackIds = mediaSession.activeTrackIds || [];
+	    this.log_('Found remote tracks', remoteTracks);
+	    remoteTracks.forEach(function (track) {
+	      // video tracks are not supported right now
+	      if (track.type === 'VIDEO') {
+	        return;
+	      }
+
+	      var lowerType = track.type.toLowerCase();
+	      var titleType = toTitleCase(lowerType);
+	      var vjsTrack = new videojs__default['default'][titleType + "Track"]({
+	        id: track.trackId,
+	        label: track.name || track.language || 'unknown',
+	        tech: _this3,
+	        language: track.language
+	      });
+
+	      if (activeTrackIds.includes(track.trackId)) {
+	        if (vjsTrack.hasOwnProperty('mode')) {
+	          vjsTrack.mode = 'showing';
+	        } else {
+	          vjsTrack.enabled = true;
+	        }
+	      }
+
+	      _this3.log_('Adding new track', track.name);
+
+	      _this3[lowerType + "Tracks"]().addTrack(vjsTrack);
+	    });
+	  }
+	  /**
+	   * Set the starting values on the remote player, and trigger some events
+	   * so that the local player is up to date.
+	   */
+	  ;
+
+	  _proto.setupRemotePlayer_ = function setupRemotePlayer_() {
+	    var _this4 = this;
+
+	    this.remotePlayerSetup_ = true; // we need to give the player time
+	    // to listend for tech events
+	    // so we do this async
+
+	    this.ready(function () {
+	      // if we loaded the source
+	      // force local play to show that playback has started.
+	      if (!_this4.paused()) {
+	        _this4.trigger('play');
+
+	        _this4.trigger('playing');
+	      } else {
+	        _this4.trigger('pause');
+	      }
+
+	      if (typeof _this4.options_.volume === 'number') {
+	        _this4.log_("restore volume to " + _this4.options_.volume);
+
+	        _this4.setVolume(_this4.options_.volume);
+
+	        _this4.options_.volume = null;
+	      }
+
+	      if (typeof _this4.options_.muted === 'boolean') {
+	        _this4.log_("restore muted to " + _this4.options_.muted);
+
+	        _this4.setMuted(_this4.options_.muted);
+
+	        _this4.options_.muted = null;
+	      }
+
+	      if (_this4.plugin_.player.volume !== _this4.volume()) {
+	        _this4.trigger('volumechange');
+	      }
+
+	      if (typeof _this4.options_.currentTime === 'number') {
+	        _this4.log_("restore currentTime to " + _this4.options_.currentTime);
+
+	        _this4.remotePlayer_.currentTime = _this4.options_.currentTime;
+	        _this4.options_.currentTime = null;
+
+	        _this4.trigger('timeupdate');
+	      }
+	    });
+	    this.triggerReady();
+	    this.log_('Tech is ready');
+	  }
+	  /**
+	   * Called whenever a RemotePlayer event happens. Used to translate
+	   * remote player events into local player events.
+	   *
+	   * @param {Object} event
+	   *        The RemotePlayerChangedEvent data
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.RemotePlayerChangedEvent
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework#.RemotePlayerEventType
+	   */
+	  ;
+
+	  _proto.onRemotePlayerEvent_ = function onRemotePlayerEvent_(event) {
+	    var _this5 = this;
+
+	    // in our case event.type is always anyChanged, since we listen to all
+	    // events.
+	    switch (event.field) {
+	      case 'currentTime':
+	        // don't trigger timeupdate after ended
+	        if (this.ended()) {
+	          return;
+	        }
+
+	        this.ready(function () {
+	          return _this5.trigger('timeupdate');
+	        }, true);
+	        break;
+
+	      case 'duration':
+	        this.ready(function () {
+	          return _this5.trigger('durationchange');
+	        }, true);
+	        break;
+
+	      case 'isMediaLoaded':
+	        if (event.value === true && !this.remotePlayerSetup_) {
+	          if (!this.remotePlayerSetup_) {
+	            this.setupRemotePlayer_();
+	          }
+	        }
+
+	        break;
+
+	      case 'savedPlayerState':
+	        this.savedPlayerState_ = event.value;
+	        break;
+
+	      case 'imageUrl':
+	        this.setPoster(event.value);
+	        break;
+
+	      case 'displayStatus':
+	        //  this one just means that the user opened the chromecast menu
+	        break;
+
+	      case 'isMuted':
+	      case 'volumeLevel':
+	        this.trigger('volumechange');
+	        break;
+
+	      case 'mediaInfo':
+	        if (!event.value) {
+	          return;
+	        } // Ads: review the mediaSession for adBreak activity
+
+
+	        this.plugin_.evaluateAdState();
+
+	        if (this.lastMediaInfo_ === JSON.stringify(event.value)) {
+	          return;
+	        }
+
+	        this.log_('media info changed');
+	        this.lastMediaInfo_ = JSON.stringify(event.value);
+
+	        if (event.value.contentId && !/^blob:/.test(event.value.contentId)) {
+	          this.currentSrc_ = {
+	            src: event.value.contentId,
+	            type: event.value.contentType
+	          };
+	        } // set new poster
+
+
+	        if (event.value.metadata && event.value.metadata.images && event.value.metadata.images[0]) {
+	          this.setPoster(event.value.metadata.images[0].url);
+	        } // set new duration
+
+
+	        if (event.value.duration) {
+	          this.ready(function () {
+	            return _this5.trigger('durationchange');
+	          }, true);
+	        }
+
+	        break;
+
+	      case 'isPaused':
+	        if (event.value) {
+	          this.trigger('pause');
+	        } else {
+	          if (this.ended()) {
+	            this.ended_ = false;
+	          }
+
+	          this.trigger('play');
+	        }
+
+	        break;
+
+	      case 'playerState':
+	        if (event.value === 'PAUSED') {
+	          this.trigger('pause');
+	        } else if (event.value === 'PLAYING') {
+	          this.trigger('play');
+	          this.trigger('playing'); // this indicates a seek... yes its weird...
+	        } else if (event.value === 'BUFFERING') {
+	          this.seeking_ = false;
+	          this.trigger('seek');
+	          this.trigger('seeked');
+
+	          if (!this.paused()) {
+	            this.trigger('play');
+	          }
+	        } else if (!event.value) ;
+
+	        break;
+	    }
+	    /**
+	     * Tracks:
+	     * BC-54740 (CC/Audio buttons dissapear on cast init)
+	     * Sometimes and mostly for Android chrome the receiver <-> sender skips
+	     * the event for mediaInfo at the begining, for that reason we will try to
+	     * set the track info as soon as it is available on the MediaSession.
+	     *
+	     * TODO: Review this part in the future to force somehow the playerState event
+	     * on the receiver side, because it is not triggered once the cast session
+	     * is started the first time.
+	    */
+
+
+	    this.setupTracks_();
+
+	    if (event.field !== 'displayStatus' && event.field !== 'currentTime') {
+	      this.log_(event);
+	    }
+	  }
+	  /**
+	   * Unfortunately the remote player changes out from under us after setting a source
+	   * so we need to reset our `remote player` instance every time that happens. This
+	   * function does that and adds/removes a listner for all player events
+	   */
+	  ;
+
+	  _proto.watchRemotePlayer_ = function watchRemotePlayer_() {
+	    if (this.remotePlayerController_) {
+	      this.remotePlayerController_.removeEventListener(window.cast.framework.RemotePlayerEventType.ANY_CHANGE, this.onRemotePlayerEvent_);
+	    }
+
+	    this.remotePlayer_ = new window.cast.framework.RemotePlayer();
+	    this.remotePlayerController_ = new window.cast.framework.RemotePlayerController(this.remotePlayer_);
+	    this.remotePlayerController_.addEventListener(window.cast.framework.RemotePlayerEventType.ANY_CHANGE, this.onRemotePlayerEvent_);
+	  }
+	  /**
+	   * A setter/getter for source. If a source was passed in
+	   * it acts as a setter. If a source was not passed in
+	   * it acts as a getter.
+	   *
+	   * @param {Object|string} [src]
+	   *        The source to set on the remote player
+	   *
+	   * @return {Object}
+	   *          The current source object if used as a getter
+	   */
+	  ;
+
+	  _proto.src = function src(_src) {
+	    if (_src) {
+	      return this.setSrc(_src);
+	    }
+
+	    return this.currentSrc();
+	  }
+	  /**
+	   * Get the current source object
+	   *
+	   * @return {Object}
+	   *          The current source object
+	   */
+	  ;
+
+	  _proto.currentSrc = function currentSrc() {
+	    return this.currentSrc_;
+	  }
+	  /**
+	   * Set the current source object, and load it on the remote player.
+	   *
+	   * @param {Object|string} src
+	   *        The string/object source to set.
+	   *
+	   * @param {Object} [options]
+	   *        Options to pass with with the loadrequest.
+	   *
+	   * @return {Promise}
+	   *          A promise that is resolved when the source is set on
+	   *          the remote player.
+	   */
+	  ;
+
+	  _proto.setSrc = function setSrc(src) {
+	    var _this6 = this;
+
+	    var options = {
+	      src: src,
+	      currentTime: 0
+	    };
+	    this.settingSource_ = true; // check if this source is the one the player
+	    // has in the cache. and if it is use that.
+
+	    if (typeof src === 'string') {
+	      var currentSource = this.plugin_.player.currentSource();
+
+	      if (currentSource.src === src) {
+	        options.src = currentSource;
+	      } else {
+	        options.src = {
+	          src: src,
+	          type: null
+	        };
+	      }
+	    }
+
+	    this.log_('Setting source to:', options.src); // reset options
+
+	    this.plugin_.player.addClass('vjs-waiting');
+	    return this.plugin_.sendLoad(options).then(function (e) {
+	      _this6.tracksSetup_ = false;
+	      _this6.poster_ = null;
+
+	      _this6.trigger('loadstart');
+
+	      _this6.watchRemotePlayer_();
+
+	      _this6.setupRemotePlayer_();
+
+	      _this6.trigger('loadedmetadata');
+
+	      _this6.trigger('loadeddata');
+
+	      _this6.plugin_.player.hasStarted(true);
+
+	      return window.Promise.resolve();
+	    }).catch(function (e) {
+	      videojs__default['default'].log.error(e);
+	    }).finally(function () {
+	      _this6.settingSource_ = false;
+	    });
+	  }
+	  /**
+	   * returns wether the remote player is paused or not
+	   *
+	   * @return {boolean}
+	   *          true if paused, false otherwise
+	   */
+	  ;
+
+	  _proto.paused = function paused() {
+	    // remote player always returns false
+	    // after it has ended, so we need to return
+	    // true.
+	    if (this.ended()) {
+	      return true;
+	    }
+
+	    return this.remotePlayer_.isPaused;
+	  }
+	  /**
+	   * Starts playback if the remote player is paused.
+	   */
+	  ;
+
+	  _proto.play = function play() {
+	    var _this7 = this;
+
+	    if (this.ended()) {
+	      // for the seek back to 0
+	      this.trigger('seek'); // do not call setSrc if setSrc has already been called but is yet to be resolved/rejected
+
+	      var canCallSetSrc = this.settingSource_ ? Promise.resolve() : this.setSrc(); // this is a way to force reload the same asset in the remote player (receiver)
+	      // it should be changed once the cast SDK implement a better way to interact with
+	      // custom players
+
+	      canCallSetSrc.then(function () {
+	        _this7.ended_ = false;
+
+	        _this7.trigger('seeked');
+
+	        _this7.trigger('play');
+	      });
+	      return;
+	    }
+
+	    if (!this.paused()) {
+	      return;
+	    }
+
+	    this.remotePlayerController_.playOrPause();
+	  };
+
+	  _proto.stop = function stop() {
+	    if (this.remotePlayerController_) {
+	      this.remotePlayerController_.stop();
+	    }
+	  }
+	  /**
+	   * Stops playback if the remote player is playing.
+	   */
+	  ;
+
+	  _proto.pause = function pause() {
+	    if (this.paused()) {
+	      return;
+	    }
+
+	    this.remotePlayerController_.playOrPause();
+	  };
+
+	  _proto.setScrubbing = function setScrubbing(isScrubbing) {
+	    this.isScrubbing_ = isScrubbing;
+	  }
+	  /**
+	   * set the current time on the remote player to a new time.
+	   *
+	   * @param {number} ct
+	   *        The current time value to set on the remote player.
+	   */
+	  ;
+
+	  _proto.setCurrentTime = function setCurrentTime(ct) {
+	    var _this8 = this;
+
+	    if (this.ended()) {
+	      this.trigger('seek');
+	      this.plugin_.sendMessage({
+	        type: 'replay',
+	        data: {
+	          currentTime: ct
+	        }
+	      }).then(function () {
+	        _this8.ended_ = false;
+
+	        _this8.trigger('seeked');
+	      });
+	      return;
+	    }
+
+	    this.remotePlayer_.currentTime = ct;
+	    this.seeking_ = true; // on ended we dont actually seek, we have to reset the source
+	    // and seek at the same time. We still want the client to update
+	    // instantly though.
+
+	    if (!this.ended()) {
+	      this.remotePlayerController_.seek();
+	    } // we want the seek to register on the player immediately.
+
+
+	    this.trigger('timeupdate');
+	  }
+	  /**
+	   * Get the current time value of the remote player
+	   *
+	   * @return {number}
+	   *          Te current time value of the remote player
+	   */
+	  ;
+
+	  _proto.currentTime = function currentTime() {
+	    return this.remotePlayer_.currentTime;
+	  }
+	  /**
+	   * Set the current value of muted on the remote player
+	   *
+	   * @param {boolean} muted
+	   *        The muted value to set
+	   */
+	  ;
+
+	  _proto.setMuted = function setMuted(muted) {
+	    var _this9 = this;
+
+	    this.plugin_.castSession().setMute(muted).then(function () {}, function (error) {
+	      _this9.log_('setMuted error', error);
+	    });
+	  }
+	  /**
+	   * Get the current value of muted on the remote player
+	   *
+	   * @return {boolean}
+	   *          The current value of muted
+	   */
+	  ;
+
+	  _proto.muted = function muted() {
+	    return this.plugin_.castSession().isMute();
+	  }
+	  /**
+	   * Set the current value of volume on the remote player
+	   *
+	   * @param {number} volume
+	   *        The volume value to set
+	   */
+	  ;
+
+	  _proto.setVolume = function setVolume(volume) {
+	    var _this10 = this;
+
+	    this.plugin_.castSession().setVolume(volume).then(function () {}, function (error) {
+	      _this10.log_('setVolume error', error);
+	    });
+	  }
+	  /**
+	   * Get the current value of volume on the remote player
+	   *
+	   * @return {number}
+	   *          The current value of volume
+	   */
+	  ;
+
+	  _proto.volume = function volume() {
+	    return this.plugin_.castSession().getVolume();
+	  }
+	  /**
+	   * Get the duration value from the remote player
+	   *
+	   * @return {number}
+	   *          The duration
+	   */
+	  ;
+
+	  _proto.duration = function duration() {
+	    return this.remotePlayer_.duration || this.durationCache_;
+	  }
+	  /**
+	   * Returns true if the video is currently over and false otherwise.
+	   *
+	   * @return {boolean}
+	   *         If the video is currently ended or not
+	   */
+	  ;
+
+	  _proto.ended = function ended() {
+	    return this.ended_;
+	  }
+	  /**
+	   * The current url to the poster
+	   *
+	   * @return {string|undefind}
+	   *         the url to the poster or undefined
+	   */
+	  ;
+
+	  _proto.poster = function poster() {
+	    return this.poster_;
+	  }
+	  /**
+	   * Set the current url to the poster
+	   *
+	   * @param {string|undefined} poster
+	   *          the url to the poster or undefined
+	   */
+	  ;
+
+	  _proto.setPoster = function setPoster(poster) {
+	    if (this.poster_ === poster) {
+	      return;
+	    }
+
+	    this.poster_ = poster;
+	    this.plugin_.player.poster_ = '';
+	    this.trigger('posterchange');
+	  }
+	  /**
+	   * A getter for the remote player object
+	   *
+	   * @return {Object}
+	   *          The RemotePlayer Object
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.RemotePlayer
+	   */
+	  ;
+
+	  _proto.remotePlayer = function remotePlayer() {
+	    return this.remotePlayer_;
+	  }
+	  /**
+	   * A getter for the remote player controller object
+	   *
+	   * @return {Object}
+	   *          The RemotePlayerController Object
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.RemotePlayerController
+	   */
+	  ;
+
+	  _proto.remotePlayerController = function remotePlayerController() {
+	    return this.remotePlayerController_;
+	  }
+	  /**
+	   * A getter for the PlayerState that we get after a video ends
+	   *
+	   * @return {Object}
+	   *          The PlayerState Object
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.RemotePlayer#savedPlayerState
+	   * @see https://developers.google.com/cast/docs/reference/chrome/chrome.cast.media#.PlayerState
+	   */
+	  ;
+
+	  _proto.savedPlayerState = function savedPlayerState() {
+	    return this.savedPlayerState_;
+	  }
+	  /**
+	   * Cleanup this tech
+	   */
+	  ;
+
+	  _proto.dispose = function dispose() {
+	    _Tech.prototype.dispose.call(this);
+
+	    this.stop();
+	    this.remotePlayerController_.removeEventListener(window.cast.framework.RemotePlayerEventType.ANY_CHANGE, this.onRemotePlayerEvent_);
+	  }
+	  /**
+	   * Returns wether the remote player is currently seeking or not
+	   *
+	   * @return {boolean}
+	   *          true if seeking, false otherwise
+	   */
+	  ;
+
+	  _proto.seeking = function seeking() {
+	    return this.seeking_;
+	  }
+	  /**
+	   * This will not be supported as we always want the player to be fullscreen
+	   * on the chromecast.
+	   */
+	  ;
+
+	  _proto.exitFullscreen = function exitFullscreen() {}
+	  /**
+	   * This will not be supported as we always want the player to be fullscreen
+	   * on the chromecast.
+	   */
+	  ;
+
+	  _proto.enterFullscreen = function enterFullscreen() {}
+	  /**
+	   * This will not be supported as we always want the player to be fullscreen
+	   * on the chromecast.
+	   *
+	   * @return {boolean}
+	   *          Always returns 'false'.
+	   */
+	  ;
+
+	  _proto.supportsFullscreen = function supportsFullscreen() {
+	    return false;
+	  }
+	  /**
+	   * Check if this tech is supported or not. It is only supported on chrome and not on
+	   * the chromecast as a receiver app.
+	   *
+	   * @return {boolean}
+	   *          If this tech is supported or not
+	   */
+	  ;
+
+	  ChromecastTech.isSupported = function isSupported() {
+	    // we are on the receiver
+	    if (window.cast && window.cast.receiver) {
+	      return false;
+	    } // don't init the plugin for chrome or on the receiver
+
+
+	    if (!videojs__default['default'].browser.IS_CHROME) {
+	      return false;
+	    }
+
+	    return true;
+	  }
+	  /**
+	   * Check if the tech can support the given type
+	   *
+	   * @param {string} type
+	   *        The mimetype to check
+	   * @return {string} 'probably', 'maybe', or '' (empty string)
+	   */
+	  ;
+
+	  ChromecastTech.canPlayType = function canPlayType(type) {
+	    return 'maybe';
+	  }
+	  /**
+	   * Check if the tech can support the given source
+	   *
+	   * @param {Object} srcObj
+	   *        The source object
+	   * @param {Object} options
+	   *        The options passed to the tech
+	   * @return {string} 'probably', 'maybe', or '' (empty string)
+	   */
+	  ;
+
+	  ChromecastTech.canPlaySource = function canPlaySource(srcObj, options) {
+	    return 'maybe';
+	  } // From here on these functions as unsupported.
+	  // These may be supported through custom messages in the future.
+
+	  /**
+	   * Should return the remote elements `readyState`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {string}
+	   *          returns an empty string for now.
+	   */
+	  ;
+
+	  _proto.readyState = function readyState() {
+	    return '';
+	  }
+	  /**
+	   * Should return the remote elements `networkState`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {string}
+	   *          returns an empty string for now.
+	   */
+	  ;
+
+	  _proto.networkState = function networkState() {
+	    return '';
+	  }
+	  /**
+	   * Should return the remote elements `controls`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {boolean}
+	   *          Always returns true.
+	   */
+	  ;
+
+	  _proto.controls = function controls() {
+	    return true;
+	  }
+	  /**
+	   * Should set `controls` on the remote element.
+	   *
+	   * @param {boolean} controls
+	   *        The value to set controls to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setControls = function setControls(controls) {}
+	  /**
+	   * Should set `autoplay` on the remote element.
+	   *
+	   * @param {boolean} autoplay
+	   *        The value to set autoplay to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setAutoplay = function setAutoplay(autoplay) {}
+	  /**
+	   * Should return the remote elements `autoplay`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {boolean}
+	   *          Always returns true.
+	   */
+	  ;
+
+	  _proto.autoplay = function autoplay() {
+	    return true;
+	  }
+	  /**
+	   * Should reload the remote video element
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.load = function load() {}
+	  /**
+	   * Should set `autoplay` on the remote element.
+	   *
+	   * @param {string} preload
+	   *        The value to set preload to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setPreload = function setPreload(preload) {}
+	  /**
+	   * Should return the remote elements `preload`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {boolean}
+	   *          Always returns 'auto'.
+	   */
+	  ;
+
+	  _proto.preload = function preload() {
+	    return 'auto';
+	  }
+	  /**
+	   * Should set `defaultPlaybackRate` on the remote element.
+	   *
+	   * @param {number} defaultPlaybackRate
+	   *        The value to set defaultPlaybackRate to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setDefaultPlaybackRate = function setDefaultPlaybackRate(defaultPlaybackRate) {}
+	  /**
+	   * Should return the remote elements `defaultPlaybackRate`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {number}
+	   *          Always returns '1.0'.
+	   */
+	  ;
+
+	  _proto.defaultPlaybackRate = function defaultPlaybackRate() {
+	    return 1.0;
+	  }
+	  /**
+	   * Should set `playbackRate` on the remote element.
+	   *
+	   * @param {number} playbackRate
+	   *        The value to set playbackRate to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setPlaybackRate = function setPlaybackRate(playbackRate) {}
+	  /**
+	   * Should return the remote elements `playbackRate`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {number}
+	   *          Always returns '1.0'.
+	   */
+	  ;
+
+	  _proto.playbackRate = function playbackRate() {
+	    return 1.0;
+	  }
+	  /**
+	   * Should return the remote elements `loop`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {boolean}
+	   *          Always returns 'false'.
+	   */
+	  ;
+
+	  _proto.loop = function loop() {
+	    return false;
+	  }
+	  /**
+	   * Should set `loop` on the remote element.
+	   *
+	   * @param {boolean} loop
+	   *        The value to set loop to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setLoop = function setLoop(loop) {}
+	  /**
+	   * Should set `defaultMuted` on the remote element.
+	   *
+	   * @param {boolean} defaultMuted
+	   *        The value to set defaultMuted to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setDefaultMuted = function setDefaultMuted(defaultMuted) {}
+	  /**
+	   * Should return the remote elements `defaultMuted`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {boolean}
+	   *          Always returns 'false'.
+	   */
+	  ;
+
+	  _proto.defaultMuted = function defaultMuted() {
+	    return false;
+	  }
+	  /**
+	   * Should return the remote elements `playsinline`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {boolean}
+	   *          Always returns 'false'.
+	   */
+	  ;
+
+	  _proto.playsinline = function playsinline() {
+	    return false;
+	  }
+	  /**
+	   * Should set `playsinline` on the remote element.
+	   *
+	   * @param {boolean} playsinline
+	   *        The value to set playsinline to.
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   */
+	  ;
+
+	  _proto.setPlaysinline = function setPlaysinline(playsinline) {}
+	  /**
+	   * Should return the remote elements `videoWidth`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {number}
+	   *          Always returns '1280'.
+	   */
+	  ;
+
+	  _proto.videoWidth = function videoWidth() {
+	    return 1280;
+	  }
+	  /**
+	   * Should return the remote elements `videoHeight`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {number}
+	   *          Always returns '720'.
+	   */
+	  ;
+
+	  _proto.videoHeight = function videoHeight() {
+	    return 720;
+	  }
+	  /**
+	   * Should return the remote elements `height`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {number}
+	   *          Always returns '720'.
+	   */
+	  ;
+
+	  _proto.height = function height() {
+	    return 720;
+	  }
+	  /**
+	   * Should return the remote elements `width`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {number}
+	   *          Always returns '1280'.
+	   */
+	  ;
+
+	  _proto.width = function width() {
+	    return 1280;
+	  }
+	  /**
+	   * Should return the remote elements `seekable`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {TimeRange}
+	   *          Always returns an empty TimeRange object.
+	   */
+	  ;
+
+	  _proto.seekable = function seekable() {
+	    return videojs__default['default'].createTimeRange();
+	  }
+	  /**
+	   * Should return the remote elements `buffered`
+	   *
+	   * > NOTE: This is only here for compatablity. It is not supported
+	   *         right now.
+	   *
+	   * @return {TimeRange}
+	   *          Always returns an empty TimeRange object.
+	   */
+	  ;
+
+	  _proto.buffered = function buffered() {
+	    return videojs__default['default'].createTimeRange();
+	  }
+	  /**
+	   * Get the current audio track list
+	   *
+	   * @return {AudioTrackList}
+	   *         the current audio track list.
+	   */
+	  ;
+
+	  _proto.audioTracks = function audioTracks() {
+	    return this.options_.audioTracks;
+	  }
+	  /**
+	   * Get the current video track list
+	   *
+	   * @return {VideoTrackList}
+	   *         the current video track list.
+	   */
+	  ;
+
+	  _proto.videoTracks = function videoTracks() {
+	    return this.options_.videoTracks;
+	  }
+	  /**
+	   * Get the current text track list
+	   *
+	   * @return {TextTrackList}
+	   *         the current text track list.
+	   */
+	  ;
+
+	  _proto.textTracks = function textTracks() {
+	    return this.options_.textTracks;
+	  };
+
+	  return ChromecastTech;
+	}(Tech);
+
+	ChromecastTech.prototype.featuresTimeupdateEvents = true;
+	videojs__default['default'].registerTech('ChromecastTech', ChromecastTech);
+	var orderIndex = Tech.defaultTechOrder_.indexOf('ChromecastTech'); // remove it from the default index
+
+	if (orderIndex !== -1) {
+	  Tech.defaultTechOrder_.splice(orderIndex, 1);
+	}
+
+	var Button = videojs__default['default'].getComponent('Button');
+	/**
+	 * Determine whether or not a player is using contrib-ads 6+.
+	 *
+	 * @param  {Player} player
+	 *         The player
+	 *
+	 * @return {boolean}
+	 *         if the player is using contrib-ads 6+
+	 */
+
+	var usingAds6Plus = function usingAds6Plus(player) {
+	  return player.usingPlugin('ads') && typeof player.ads.inAdBreak === 'function';
+	};
+	/**
+	 * A button that will interact with the Chromecast framework.
+	 * luckily most of the logic for this function is not handled by us.
+	 * all that we have to do is create the button a certain way.
+	 *
+	 * @see https://developers.google.com/cast/docs/chrome_sender_integrate#cast_button
+	 */
+
+
+	var ChromecastButton = /*#__PURE__*/function (_Button) {
+	  inheritsLoose(ChromecastButton, _Button);
+
+	  /**
+	   * Creates an instance of this class.
+	   *
+	   * @param  {Player} player
+	   *         The `Player` that this class should be attached to.
+	   *
+	   * @param  {Object} [options]
+	   *         The key/value store of player options.
+	   */
+	  function ChromecastButton(player, options) {
+	    var _this;
+
+	    _this = _Button.call(this, player, options) || this;
+	    _this.wasHidden_ = false;
+	    _this.hasSeenAdstart_ = false;
+
+	    _this.on(_this.player_, 'adstart', _this.hideOnAdstart_); // There's a bug in contrib-ads 5 that causes an `adtimeupdate` event to fire
+	    // even if no ad plays, so we should only hide this button on adtimeupdates
+	    // for ad plugins using contrib-ads 6.
+
+
+	    if (usingAds6Plus(_this.player_)) {
+	      _this.on(_this.player_, 'adtimeupdate', _this.hideOnAdtimeupdate_);
+	    }
+
+	    _this.on(_this.player_, 'adend', _this.showOnAdend_);
+
+	    return _this;
+	  }
+	  /**
+	   * Build the dom node for this Component.
+	   *
+	   * Internally it seems like chorme uses a web component for any
+	   * button created with an `is` value or `google-cast-button`.
+	   * To make it easy, and to keep the size of the player down, we use
+	   * that.
+	   *
+	   * @return {Element}
+	   *         The dom node for this component
+	   *
+	   * @see https://developers.google.com/cast/docs/chrome_sender_integrate#cast_button
+	   */
+
+
+	  var _proto = ChromecastButton.prototype;
+
+	  _proto.createEl = function createEl() {
+	    var el_ = _Button.prototype.createEl.call(this); // TODO: get dom.createEl to support this
+
+
+	    var el = document.createElement('button', 'google-cast-button');
+	    var i = el_.children.length; // move children to new el
+
+	    while (i--) {
+	      el.appendChild(el_.children[i]);
+	    } // copy attributes
+
+
+	    var attributes = videojs__default['default'].dom.getAttributes(el_);
+	    Object.keys(attributes).forEach(function (key) {
+	      el.setAttribute(key, attributes[key]);
+	    });
+	    el.className = el_.className;
+	    return el;
+	  }
+	  /**
+	   * Build the css class for this Component
+	   *
+	   * @return {string}
+	   *         The css class for this element.
+	   */
+	  ;
+
+	  _proto.buildCSSClass = function buildCSSClass() {
+	    return _Button.prototype.buildCSSClass.call(this) + " vjs-chromecast-receiver-button";
+	  }
+	  /**
+	   * Ensure that this button remains hidden during ads even if connections change
+	   * and a Chromecast is detected during an ad.
+	   *
+	   * @param {Object} e
+	   *        The adtimeupdate event that caused this
+	   *
+	   * @listens Player#adtimeupdate
+	   */
+	  ;
+
+	  _proto.hideOnAdtimeupdate_ = function hideOnAdtimeupdate_(e) {
+	    // We can see adtimeupdates before an adstart if we are using cancelContentPlay
+	    // instead of play middleware (such as on Android). We should only hide the button
+	    // on adtimeupdates that occur after an ad has actually started playing.
+	    if (!this.hasSeenAdstart_) {
+	      return;
+	    }
+
+	    this.hide();
+	  }
+	  /**
+	   * Hide this button during ads, and save wether it was hidden or not.
+	   * This will allow us to keep it hidden, if it was previously hidden in
+	   * ChromecastButton#showOnAdend_
+	   *
+	   * @param {Object} e
+	   *        The adstart event that caused this
+	   *
+	   * @listens Player#adstart
+	   */
+	  ;
+
+	  _proto.hideOnAdstart_ = function hideOnAdstart_(e) {
+	    if (this.hasClass('vjs-hidden')) {
+	      this.wasHidden_ = true;
+	    }
+
+	    this.hide();
+	    this.hasSeenAdstart_ = true;
+	  }
+	  /**
+	   * Show the button after an ad if it was not hidden before the ad.
+	   *
+	   * @param {Object} e
+	   *        The adend event that caused this
+	   *
+	   * @listens Player#adend
+	   */
+	  ;
+
+	  _proto.showOnAdend_ = function showOnAdend_(e) {
+	    if (this.wasHidden_) {
+	      return;
+	    }
+
+	    this.show(); // reset adstart flag for any subsequent ad
+
+	    this.hasSeenAdstart_ = false;
+	  }
+	  /**
+	   * Called whenever the chromecast button is clicked.
+	   * We let the built-in chromecast button handle the work, by calling its
+	   * `click` function.
+	   *
+	   * @param {event} e
+	   *        The event that caused this function to run.
+	   */
+	  ;
+
+	  _proto.handleClick = function handleClick(e) {
+	    this.el().click();
+	  };
+
+	  return ChromecastButton;
+	}(Button);
+	/**
+	 * A string that will be displayed to screen readers and on mouse over
+	 *
+	 * @private {string}
+	 */
+
+
+	ChromecastButton.prototype.controlText_ = 'Cast to Chromecast';
+	videojs__default['default'].registerComponent('ChromecastButton', ChromecastButton);
+
+	/**
+	 * A class to display the chromecast icon over the player while casting.
+	 * This extends the Chromecast button class because even though this
+	 * won't be a literal button, the only way to show the chromecast logo is
+	 * by passing a button element to the Cast SDK.
+	 * See ChromecastButton for more information on that.
+	 * Note: This may no longer be the case in newer versions of the Cast SDK
+	 */
+
+	var ChromecastIcon = /*#__PURE__*/function (_ChromecastButton) {
+	  inheritsLoose(ChromecastIcon, _ChromecastButton);
+
+	  /**
+	   * Creates an instance of this class.
+	   *
+	   * @param {Player} player
+	   *        The `Player` that this class should be attached to.
+	   *
+	   * @param {Object} options
+	   *        The key/value store of options.
+	   */
+	  function ChromecastIcon(player, options) {
+	    var _this;
+
+	    _this = _ChromecastButton.call(this, player, options) || this; // Remove inherited hide/show listeners. They are only needed to hide
+	    // the clickable Chromecast button during ad playback on the sender when
+	    // not casting, and this component only becomes visible when casting.
+
+	    _this.off(_this.player_, 'adstart', _this.hideOnAdstart_);
+
+	    _this.off(_this.player_, 'adtimeupdate', _this.hideOnAdtimeupdate_);
+
+	    _this.off(_this.player_, 'adend', _this.showOnAdend_);
+
+	    _this.disable();
+
+	    return _this;
+	  }
+	  /**
+	   * Build the css class for this element. Notice that this does not
+	   * use the parent css class.
+	   *
+	   * @return {string}
+	   *         The css class
+	   */
+
+
+	  var _proto = ChromecastIcon.prototype;
+
+	  _proto.buildCSSClass = function buildCSSClass() {
+	    return 'vjs-chromecast-receiver-icon';
+	  };
+
+	  return ChromecastIcon;
+	}(ChromecastButton);
+
+	videojs__default['default'].registerComponent('ChromecastIcon', ChromecastIcon);
+
+	var Component$1 = videojs__default['default'].getComponent('Component');
+	/**
+	 * A class to display the current device that this player is casting to.
+	 * This is a part of the ChromecastOverlay, and will appear over the poster.
+	 */
+
+	var ChromecastText = /*#__PURE__*/function (_Component) {
+	  inheritsLoose(ChromecastText, _Component);
+
+	  /**
+	   * Creates an instance of this class.
+	   *
+	   * @param {Player} player
+	   *        The `Player` that this class should be attached to.
+	   *
+	   * @param {Object} options
+	   *        The key/value store of options.
+	   *
+	   * @param {string} options.deviceName
+	   *        The device that we are streaming to
+	   */
+	  function ChromecastText(player, options) {
+	    var _this;
+
+	    _this = _Component.call(this, player, options) || this;
+	    _this.el().innerText = _this.localize('Casting to: {1}', [options.deviceName]);
+	    return _this;
+	  }
+	  /**
+	   * Create the dom node for this class
+	   *
+	   * @return {Element}
+	   *         The dom node for this class
+	   */
+
+
+	  var _proto = ChromecastText.prototype;
+
+	  _proto.createEl = function createEl() {
+	    return _Component.prototype.createEl.call(this, 'div', {
+	      className: 'vjs-chromecast-receiver-text'
+	    });
+	  };
+
+	  return ChromecastText;
+	}(Component$1);
+
+	videojs__default['default'].registerComponent('ChromecastText', ChromecastText);
+
+	var Component = videojs__default['default'].getComponent('Component');
+	/**
+	 * An overlay that will show in the bottom right
+	 * of the video when casting to a device.
+	 */
+
+	var ChromecastOverlay = /*#__PURE__*/function (_Component) {
+	  inheritsLoose(ChromecastOverlay, _Component);
+
+	  function ChromecastOverlay() {
+	    return _Component.apply(this, arguments) || this;
+	  }
+
+	  var _proto = ChromecastOverlay.prototype;
+
+	  /**
+	   * Create the dom node for this class
+	   *
+	   * @return {Element}
+	   *         The dom node for this class
+	   */
+	  _proto.createEl = function createEl() {
+	    return _Component.prototype.createEl.call(this, 'div', {
+	      className: 'vjs-chromecast-receiver-overlay'
+	    });
+	  };
+
+	  return ChromecastOverlay;
+	}(Component);
+	/**
+	 * Default options for `ChromecastOverlay`
+	 *
+	 * @type {Object}
+	 * @private
+	 */
+
+
+	ChromecastOverlay.prototype.options_ = {
+	  children: ['chromecastIcon', 'chromecastText']
+	};
+	videojs__default['default'].registerComponent('ChromecastOverlay', ChromecastOverlay);
+
+	var appId = "341387A3";
+	var messageChannel = "urn:x-cast:net.brightcove.players.cast";
+	var config = {
+		appId: appId,
+		messageChannel: messageChannel
+	};
+
+	// These errors do not need to be localized because the videojs-errors plugin
+	// always localizes `headline` and `message`.
+	var customErrors = {
+	  'chromecast-player-load-failure': {
+	    headline: 'Failed to load the Chromecast player.',
+	    type: 'CHROMECAST_PLAYER_LOAD_FAILURE',
+	    message: 'It is likely that you will not be able to cast right now. You may continue watching locally.'
+	  },
+	  'chromecast-player-error': {
+	    headline: 'There has been an error on the remote Chromecast player.',
+	    type: 'CHROMECAST_PLAYER_ERROR',
+	    message: 'An error occurred on the remote Chromecast player which stalled playback. You may want to try casting again.'
+	  },
+	  'chromecast-connecting-error': {
+	    headline: 'There has been an error connecting to your Chromecast.',
+	    type: 'CHROMECAST_CONNECTING_ERROR',
+	    message: 'An error has occurred while attempting to connect to your Chromecast. You may want to try casting again.'
+	  },
+	  'chromecast-video-auth-failure': {
+	    headline: 'Chromecast has failed to authenticate.',
+	    type: 'CHROMECAST_VIDEO_AUTH_FAILURE',
+	    message: 'It is likely that you will not be able to cast right now. You may continue watching locally.'
+	  }
+	};
+
+	var Plugin = videojs__default['default'].getPlugin('plugin');
+	var defaults = {
+	  debug: false,
+	  appId: '',
+	  playerUrl: '',
+	  authRequest: {},
+	  castOnConnect: true,
+	  splashScreen: '',
+	  ssaiDynamicMacros: [],
+	  appName: ''
+	};
+
+	var ssaiDynamicMacroReducer = function ssaiDynamicMacroReducer(acc, macro) {
+	  if (!window[macro]) {
+	    videojs__default['default'].log.warn("Chromecast: SSAI Dynamic Macro not found: " + macro);
+	    return acc;
+	  }
+
+	  acc[macro] = window[macro];
+	  return acc;
+	}; // custom channel for chromecast messages
+
+	/**
+	 * A plugin to cast and control the Brightcove player that has this plugin enabled.
+	 *
+	 * > NOTE: This plugin will only do something on the chrome browser.
+	 * > NOTE2: This plugin was made using a v2 receiver `2.0.0` and a sender version `1.0.06`.
+	 *          To check these values use `cast.framework.VERSION` on the client/chromecast.
+	 *
+	 * * The "Receiver" (./receiver.html) is the portion that runs on the chromecast
+	 * * The "Sender" is this plugin, but most of the logic is in ChormecastTech and this file.
+	 *
+	 * For full chromecast API docs go to:
+	 * @see https://developers.google.com/cast/docs/reference/
+	 */
+
+
+	var ChromecastReceiver = /*#__PURE__*/function (_Plugin) {
+	  inheritsLoose(ChromecastReceiver, _Plugin);
+
+	  /**
+	   * Creates an instance of this class.
+	   *
+	   * @param {Player} player
+	   *        The `Player` that this class should be attached to.
+	   *
+	   * @param {Object} [options]
+	   *        The key/value store of player options.
+	   */
+	  function ChromecastReceiver(player, options) {
+	    var _this;
+
+	    _this = _Plugin.call(this, player) || this;
+	    _this.options = videojs__default['default'].mergeOptions(defaults, options);
+	    _this.initialized_ = false;
+	    _this.emeOptions_ = {};
+	    _this.heartbeat = null;
+	    var warnPrefix = 'The Brightcove Chromecast Receiver plugin could not be initialized because'; // if the chromecast tech is not supported bail out
+
+	    if (!ChromecastTech.isSupported()) {
+	      videojs__default['default'].log.warn(warnPrefix + " the player is not running on a supported version of Google Chrome.");
+
+	      _this.dispose();
+
+	      return assertThisInitialized(_this);
+	    } // if not on a secure domain, bail out
+
+
+	    if (!ChromecastReceiver._inSecureContext()) {
+	      videojs__default['default'].log.warn(warnPrefix + " the player is not running in a secure (HTTPS) context.");
+
+	      _this.dispose();
+
+	      return assertThisInitialized(_this);
+	    } // custom videojs-errors integration boolean
+
+
+	    _this.videojsErrorsSupport_ = player.usingPlugin('errors');
+
+	    if (_this.videojsErrorsSupport_) {
+	      player.errors({
+	        errors: customErrors
+	      });
+	    }
+
+	    window.__onGCastApiAvailable = function (isAvailable) {
+	      if (!isAvailable) {
+	        return;
+	      }
+
+	      _this.initialize_();
+	    }; // sometimes google doesn't call their own callback
+	    // woopie...
+
+
+	    var count = 0;
+
+	    var isReadyInterval = _this.player.setInterval(function () {
+	      if (_this.initialized_ || count === 5) {
+	        return _this.player.clearInterval(isReadyInterval);
+	      }
+
+	      if (window.chrome && window.chrome.cast && window.chrome.cast.isAvailable) {
+	        return _this.initialize_();
+	      } // this additional if is because sometimes Google does not always set window.chrome.cast.isAvailable or call window.__onGCastApiAvailable
+
+
+	      if (_this.chromecastGlobalsAvailable()) {
+	        return _this.initialize_();
+	      }
+
+	      count++;
+	    }, 2000);
+
+	    _this.player.addClass('vjs-chromecast-receiver');
+
+	    _this.player.controlBar.addChild('ChromecastButton', {});
+
+	    _this.sessionStateEventListener_ = videojs__default['default'].bind(assertThisInitialized(_this), _this.sessionStateEventListener_);
+	    _this.customMessageListener_ = videojs__default['default'].bind(assertThisInitialized(_this), _this.customMessageListener_);
+	    var controlBar = _this.player.controlBar;
+	    _this.fsToggleIndex_ = controlBar.children().indexOf(controlBar.getChild('FullscreenToggle')); // if window already has cast framework inizialize
+
+	    if (_this.chromecastGlobalsAvailable()) {
+	      return _this.initialize_() || assertThisInitialized(_this);
+	    }
+
+	    _this.getSenderScript_();
+
+	    _this.toggleProgressControl = _this.toggleProgressControl_.bind(assertThisInitialized(_this));
+	    return _this;
+	  }
+	  /**
+	   * Check if the Chromecast globals are available
+	   *
+	   * @return {boolean}
+	   *          If  Chromecast globals are  available or not
+	   */
+
+
+	  var _proto = ChromecastReceiver.prototype;
+
+	  _proto.chromecastGlobalsAvailable = function chromecastGlobalsAvailable() {
+	    if (window.chrome && window.chrome.cast && window.cast && window.cast.framework && window.cast.framework.CastContext && window.cast.framework.CastContext.getInstance) {
+	      return true;
+	    }
+
+	    return false;
+	  }
+	  /**
+	   * Get the chromecast sender script and load the sender framework. This stuff is all hosted
+	   * by google.
+	   */
+	  ;
+
+	  _proto.getSenderScript_ = function getSenderScript_() {
+	    var _this2 = this;
+
+	    var script = document.createElement('script');
+	    script.src = '//www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
+
+	    script.onload = function () {
+	      return _this2.log_('downloaded cast_sender.js');
+	    };
+
+	    script.onerror = function () {
+	      return _this2.log_('failed to download cast_sender.js');
+	    };
+
+	    this.player.el().appendChild(script);
+	    this.on('dispose', function () {
+	      script.onload = null;
+	      script.onerror = null;
+	    });
+	  }
+	  /**
+	   * In the constructor we add a callback function on window  called `__onGCastApiAvailable`.
+	   * This tells us when the sdk is ready. Then we call this function to initialize how our plugin
+	   * will interact with that framework.
+	   */
+	  ;
+
+	  _proto.initialize_ = function initialize_() {
+	    if (this.initialized_) {
+	      return;
+	    }
+
+	    this.log_('sdk is ready, initializing');
+	    this.initialized_ = true; // we have to wait until the tech has been choosen to actually intialize
+
+	    this.castContext().setOptions({
+	      receiverApplicationId: this.options.appId || config.appId,
+	      // https://developers.google.com/cast/docs/reference/chrome/chrome.cast#.AutoJoinPolicy
+	      autoJoinPolicy: window.chrome.cast.AutoJoinPolicy.TAB_AND_ORIGIN_SCOPED
+	    });
+	    this.castContext().addEventListener(window.cast.framework.CastContextEventType.SESSION_STATE_CHANGED, this.sessionStateEventListener_);
+	  }
+	  /**
+	   * listens for custom messages from the receiver and handles
+	   * them.
+	   *
+	   * @param {string} namespace
+	   *        The namespace that the message comes from
+	   *
+	   * @param {string} jsonMessage
+	   *        A json message that must be parsed
+	   */
+	  ;
+
+	  _proto.customMessageListener_ = function customMessageListener_(namespace, jsonMessage) {
+	    var message = JSON.parse(jsonMessage);
+	    var tech = this.player.tech_;
+	    this.log_('Got a custom message', message);
+
+	    if (message.type === 'ended' && !tech.ended()) {
+	      tech.remotePlayer_.currentTime = tech.duration();
+	      tech.ended_ = true;
+	      tech.trigger('ended');
+	    } else if (message.type === 'error') {
+	      var errorObj = message.data.error;
+	      this.handleDisconnected();
+	      this.triggerError_(errorObj);
+	    }
+	  }
+	  /**
+	   * Trigger a custom error using videojs-errors, or a normal error
+	   * if we do not have that.
+	   *
+	   * @param {Object} errorObj
+	   *        The videojs-errors object to trigger
+	   */
+	  ;
+
+	  _proto.triggerError_ = function triggerError_(errorObj) {
+	    // if we have videojs-errors use it
+	    if (this.videojsErrorsSupport_) {
+	      this.player.error(errorObj);
+	      return;
+	    } // if we don't have videojs-errors just use a normal player error
+
+
+	    this.player.error({
+	      code: errorObj.type,
+	      message: errorObj.message
+	    });
+	  }
+	  /**
+	   * Listen to chromecast session events.
+	   *
+	   * @param {Object} event
+	   *        A `SessionStateEventData` Object.
+	   *
+	   * For a list of all events or to see what the `SessionStateEventData` object looks like:
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework#.SessionState
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.SessionStateEventData
+	   */
+	  ;
+
+	  _proto.sessionStateEventListener_ = function sessionStateEventListener_(event) {
+	    this.log_("session state changed to " + event.sessionState);
+
+	    switch (event.sessionState) {
+	      case window.cast.framework.SessionState.SESSION_STARTING:
+	        this.log_('connecting');
+	        this.handleConnecting();
+	        break;
+
+	      case window.cast.framework.SessionState.SESSION_STARTED:
+	        this.log_('connected');
+
+	        if (this.options.splashScreen) {
+	          this.sendMessage({
+	            type: 'splash-screen',
+	            data: {
+	              src: this.options.splashScreen
+	            }
+	          });
+	        }
+
+	        if (this.options.appName) {
+	          this.sendMessage({
+	            type: 'app-name',
+	            data: {
+	              appName: this.options.appName
+	            }
+	          });
+	        }
+
+	        if (this.options.castOnConnect) {
+	          this.handleConnected();
+	        }
+
+	        break;
+
+	      case window.cast.framework.SessionState.SESSION_RESUMED:
+	        this.log_('reconnected');
+	        this.player.addClass('vjs-waiting');
+	        this.handleConnected();
+	        break;
+
+	      case window.cast.framework.SessionState.SESSION_ENDED:
+	        this.log_('disconnected');
+	        this.handleDisconnected();
+	        break;
+
+	      case window.cast.framework.SessionState.SESSION_START_FAILED:
+	        if (this.player.hasClass('vjs-chromecast-receiver-connecting')) {
+	          this.handleDisconnected();
+	          this.log_('Failed to connect');
+	          this.triggerError_(customErrors['chromecast-connecting-error']);
+	        }
+
+	        break;
+	    }
+	  }
+	  /**
+	   * Handle anything that needs to happen while the player is connecting
+	   * to the receiver.
+	   */
+	  ;
+
+	  _proto.handleConnecting = function handleConnecting() {
+	    this.player.pause();
+	    this.player.removeClass('vjs-chromecast-receiver-connected');
+	    this.player.addClass('vjs-chromecast-receiver-connecting');
+	    this.player.addClass('vjs-waiting');
+	  }
+	  /**
+	   * We want to hide the fullscreen button, but we only want to hide it
+	   * if they are not in fullscreen. So we wait for a change to hide the button
+	   * in that case.
+	   *
+	   * @listens Player#fullscreenchange
+	   *
+	   * @param {EventTarget~Event} [event]
+	   *        The fullscreen change event that caused this function to run
+	   *
+	   * @private
+	   *
+	   * @return {undefined}
+	   *          returns nothing
+	   */
+	  ;
+
+	  _proto.hideFullscreen_ = function hideFullscreen_(event) {
+	    // there is no fullscreen toggle
+	    if (this.fsToggleIndex_ === -1) {
+	      return;
+	    } // player is already fullscreen, wait until that changes to hide
+	    // the button.
+
+
+	    if (this.player.isFullscreen()) {
+	      return this.one(this.player, 'fullscreenchange', this.hideFullscreen_);
+	    }
+
+	    this.player.controlBar.removeChild('FullscreenToggle');
+	  }
+	  /**
+	   * Handle anything that needs to happen after the player has connected
+	   * to the receiver.
+	   *
+	   * @return {undefined}
+	   *          returns nothing
+	   */
+	  ;
+
+	  _proto.handleConnected = function handleConnected() {
+	    var _this3 = this;
+
+	    this.player.pause();
+	    this.player.addClass('vjs-waiting');
+	    this.castSession().addMessageListener(config.messageChannel, this.customMessageListener_);
+	    this.player.removeClass('vjs-chromecast-receiver-connecting');
+	    this.player.addClass('vjs-chromecast-receiver-connected'); // chromecast is already ready to play
+
+	    if (this.castSession()) {
+	      var mediaSession = this.castSession().getMediaSession();
+
+	      if (mediaSession) {
+	        this.log_('Media is already playing on chromecast');
+	        var options = {
+	          volume: mediaSession.volume.level,
+	          muted: mediaSession.volume.muted,
+	          currentTime: mediaSession.currentTime,
+	          activeTrackIds: mediaSession.activeTrackIds,
+	          poster: mediaSession.media && mediaSession.media.metadata && mediaSession.media.metadata.images && mediaSession.media.metadata.images[0] && mediaSession.media.metadata.images[0].url,
+	          source: {}
+	        };
+	        var currentSource = this.player.currentSource();
+
+	        if (mediaSession.media) {
+	          options.source.src = mediaSession.media.contentId;
+	          options.source.type = mediaSession.media.contentType;
+	        } // this is a reconnect with the same source
+	        // otherwise this is not
+
+
+	        if (currentSource.src === options.source.src) {
+	          this.start(options);
+	          return;
+	        }
+	      }
+	    }
+
+	    this.sendLoad().then(function () {
+	      _this3.start({
+	        volume: _this3.player.volume(),
+	        muted: _this3.player.muted(),
+	        activeTrackIds: getActiveTrackIds(_this3.player.textTracks(), _this3.player.audioTracks()),
+	        poster: _this3.player.poster(),
+	        source: _this3.player.currentSource()
+	      });
+	    });
+	  }
+	  /**
+	   * Send an the intial load media request to the chromecast
+	   * receiver.
+	   *
+	   * @return {Promise}
+	   *         returns a promise that is complete when the
+	   *         load is finished.
+	   *
+	   * @param {Object} [overrides={}]
+	   *        Override the default loadMedia request parameters
+	   *
+	   * @param {Object} [overrides.src]
+	   *        A source object that should override player.currentSource.
+	   */
+	  ;
+
+	  _proto.sendLoad = function sendLoad(overrides) {
+	    var _this4 = this;
+
+	    if (overrides === void 0) {
+	      overrides = {};
+	    }
+
+	    this.log_('Going to load media and start playback on chromecast');
+	    var el = this.player.el();
+	    var currentSource = overrides.src || this.player.currentSource();
+	    var bcConfig = this.player.bcinfo || {};
+	    var hls = this.player.tech_ && this.player.tech_.hls || {}; // get the catalog plugin, as the last request is stored on the plugin prototype under data
+
+	    var catalogParams;
+
+	    if (typeof this.player.catalog.getLastData === 'function') {
+	      catalogParams = this.player.catalog.getLastData();
+	    } else {
+	      var catalog = videojs__default['default'].getPlugin('catalog');
+	      catalogParams = this.player.catalog && this.player.catalog.data || catalog && catalog.data;
+	    }
+
+	    this.heartbeat = this.player.catalog.getHeartbeat();
+
+	    if (this.heartbeat) {
+	      this.heartbeat.stop(true);
+	    }
+
+	    var mediaInfo = new window.chrome.cast.media.MediaInfo(currentSource.src, currentSource.type);
+	    var request = new window.chrome.cast.media.LoadRequest(mediaInfo);
+	    request.media.streamType = this.player.duration() === Infinity ? window.chrome.cast.media.StreamType.LIVE : window.chrome.cast.media.StreamType.BUFFERED;
+
+	    if (request.media.streamType === window.chrome.cast.media.StreamType.BUFFERED) {
+	      request.media.duration = this.player.mediainfo && this.player.mediainfo.duration || this.player.duration();
+	    } // set the metadata
+
+
+	    request.media.metadata = new window.chrome.cast.media.MovieMediaMetadata();
+	    request.media.metadata.images = [new window.chrome.cast.Image(this.player.poster())];
+	    request.media.metadata.title = catalogParams && catalogParams.name || '';
+	    request.media.metadata.subtitle = catalogParams && catalogParams.description || ''; // if we have a currentTime override use that
+
+	    if (overrides.currentTime) {
+	      request.currentTime = overrides.currentTime; // otherwise if the video is over, we should replay
+	      // on the receiver instead of casting at the end,
+	      // which would do nothing
+	    } else if (this.player.ended()) {
+	      request.currentTime = 0;
+	    } else {
+	      // reset time to zero for a new source (a new video in a playlist)
+	      // otherwise set time to the current time
+	      request.currentTime = overrides.src ? 0 : this.player.currentTime();
+	    }
+
+	    request.autoplay = overrides.autoplay || true; // send the player over
+
+	    var customData = {
+	      emeHeaders: currentSource.emeHeaders || {},
+	      keySystems: currentSource.keySystems || {},
+	      withCredentials: currentSource.withCredentials || hls && hls.options_ && hls.options_.withCredentials || false,
+	      vmap: currentSource.vmap || '',
+	      analytics: this.player.bcAnalytics && this.player.bcAnalytics.settings || {},
+	      accountId: bcConfig.accountId || el.getAttribute('data-account'),
+	      embedId: bcConfig.embedId || el.getAttribute('data-embed'),
+	      playerId: bcConfig.playerId || el.getAttribute('data-player'),
+	      applicationId: bcConfig.applicationId || el.getAttribute('data-application-id'),
+	      debug: this.options.debug || false,
+
+	      /**
+	       * authRequest can be:
+	       * - a function, and in that case we call that function here and get
+	       *   the return value which can be a string or an object as defined below.
+	       * - a string, and in that case it will be used as the url
+	       * - an object. See the README for object usage.
+	       */
+	      authRequest: typeof this.options.authRequest === 'function' ? this.options.authRequest() : this.options.authRequest
+	    }; // lets get the current tracks enabled, if any
+
+	    var activeTextTrack = this.player.textTracks().tracks_.find(function (t) {
+	      return t.mode === 'showing';
+	    });
+	    var activeAudioTrack = this.player.audioTracks().tracks_.length > 1 ? this.player.audioTracks().tracks_.find(function (t) {
+	      return t.enabled;
+	    }) : null;
+
+	    if (activeTextTrack || activeAudioTrack) {
+	      customData.tracks = {};
+
+	      if (activeTextTrack) {
+	        customData.tracks.text = activeTextTrack.id;
+	      }
+
+	      if (activeAudioTrack) {
+	        customData.tracks.audio = activeAudioTrack.id;
+	      }
+	    } // Dynamic Macros replacement
+
+
+	    var ssaiDynamicMacros = this.options.ssaiDynamicMacros.reduce(ssaiDynamicMacroReducer, {});
+
+	    if (Object.keys(ssaiDynamicMacros).length > 0) {
+	      customData.ssaiDynamicMacros = ssaiDynamicMacros;
+	    } // if we have access to it, use the new catalog param getter
+
+
+	    if (catalogParams && typeof this.player.catalog.getCatalogParamDefault_ === 'function') {
+	      customData.accountId = this.player.getAccountId();
+	      ['policyKey', 'bcovAuthToken', 'deliveryConfigId', 'env', 'baseUrl', 'adConfigId', 'tveToken'].forEach(function (name) {
+	        catalogParams[name] = _this4.player.catalog.getCatalogParamDefault_(name);
+	      });
+	    } // get most up to date last params that were used for request.
+
+
+	    if (catalogParams && typeof this.player.catalog.getLastParams === 'function') {
+	      var params = this.player.catalog.getLastParams();
+	      Object.keys(params).forEach(function (param) {
+	        catalogParams[param] = params[param];
+	      });
+	    }
+
+	    if (catalogParams) {
+	      var isCatalogSource = false;
+
+	      var catalogCheck = function catalogCheck(s) {
+	        if (s.src && s.src === currentSource.src) {
+	          isCatalogSource = true;
+	        }
+
+	        if (s.vmap && currentSource.vmap && s.vmap === currentSource.vmap) {
+	          isCatalogSource = true;
+	        }
+	      }; // determine if catalog.data is relevant to the current source
+
+
+	      if (catalogParams.sources) {
+	        catalogParams.sources.forEach(catalogCheck);
+	      } else if (catalogParams.length) {
+	        catalogParams.forEach(function (item) {
+	          if (!item.sources || isCatalogSource) {
+	            return;
+	          }
+
+	          item.sources.forEach(catalogCheck);
+	        });
+	      } // We need to set type so that id param can be set in catalog request
+
+
+	      if (catalogParams.playlistId) {
+	        catalogParams.type = 'playlist';
+	        ['offset', 'limit'].forEach(function (name) {
+	          catalogParams[name] = _this4.player.catalog.getCatalogParamDefault_(name);
+	        });
+	      } else if (catalogParams.search) {
+	        catalogParams.type = 'search';
+	        ['offset', 'limit', 'sort'].forEach(function (name) {
+	          catalogParams[name] = _this4.player.catalog.getCatalogParamDefault_(name);
+	        });
+	      } else {
+	        catalogParams.type = 'video';
+	      }
+
+	      if (isCatalogSource) {
+	        this.log_('determined that this is a catalog video');
+	        customData.catalogParams = catalogParams;
+	      }
+	    }
+
+	    customData.playerUrl = this.options.playerUrl || bcConfig.scriptUrl;
+
+	    if (!customData.playerUrl && customData.accountId && customData.playerId && customData.embedId) {
+	      customData.playerUrl = "//players.brightcove.net/" + customData.accountId + "/" + customData.playerId + "_" + customData.embedId + "/index.min.js";
+	    } // We set analytics params
+
+
+	    customData.analyticsParams = {
+	      application: this.player.bcAnalytics && this.player.bcAnalytics.client.corpCommsApp() || '',
+	      user: this.player.bcAnalytics && this.player.bcAnalytics.client.getUser() || ''
+	    };
+	    request.customData = customData;
+	    this.log_('Sending load request', request);
+	    return this.castSession().loadMedia(request).catch(function (e) {
+	      videojs__default['default'].log.error('loadmedia error', e);
+	    });
+	  }
+	  /**
+	   * The receiver has finished loading a player, we now update the "sender" ie
+	   * the plugin side so that it can control the receiver. For right now this just involves
+	   * adding the overlay and loading the ChromecastTech.
+	   *
+	   * @param {Object} options
+	   *        options to pass the tech when starting it
+	   */
+	  ;
+
+	  _proto.start = function start(options) {
+	    options = options || {};
+	    options.plugin = this;
+	    this.log_('Starting');
+	    this.hideFullscreen_(); // add the overlay just before the control bar
+
+	    if (this.overlay_) {
+	      this.player.removeChild(this.overlay_);
+	      this.overlay_.dispose();
+	      this.overlay_ = null;
+	    } // add the overlay
+
+
+	    var controlBarIndex = this.player.children().indexOf(this.player.controlBar);
+	    this.overlay_ = this.player.addChild('ChromecastOverlay', {
+	      chromecastText: {
+	        deviceName: this.castDevice().friendlyName
+	      },
+	      chromecastIcon: {}
+	    }, controlBarIndex);
+	    this.player.hasStarted(true);
+
+	    if (this.player.usingPlugin('ssai')) {
+	      this.player.ssai().disable();
+	    }
+
+	    this.player.tech_.clearTracks(['audio', 'video', 'text']);
+	    this.oldTechOrder_ = this.player.options_.techOrder;
+	    this.player.options_.techOrder = ['ChromecastTech'];
+	    var source = this.player.currentSource();
+	    var engager = this.player.bcAnalytics && this.player.bcAnalytics.engager; // prevent hls stat errors by clearing the engagers stats
+	    // for this source.
+
+	    if (engager && engager.clearStateBySrc) {
+	      engager.clearStateBySrc(source.src);
+	    }
+
+	    this.player.unloadTech_();
+	    this.player.loadTech_('ChromecastTech'); // TODO: remove this and force a newer version of svt for this plugin
+
+	    if (this.player.vhs) {
+	      this.player.vhs = null;
+	    }
+
+	    if (this.player.eme) {
+	      this.emeOptions_ = this.player.eme.options; // This is a bit ugly but eme plugin as of today
+	      // unfortunately doesn't have lifecycle or provide a dispose method
+
+	      delete this.player.eme;
+	    } // BC-54440: the player needs to reflect the receiver volume (Android TV) but
+	    // the cache will force the tech to use the local player value which sometimes is 1 (100%)
+	    // for this reason we need to get the TV volume level and set it into the cache and options <<workaround>>
+
+
+	    var receiverVol = this.castDevice() && this.castDevice().volume || null;
+
+	    if (receiverVol && receiverVol.controlType === window.chrome.cast.VolumeControlType.MASTER) {
+	      this.player.cache_.volume = receiverVol.level;
+	      options.muted = receiverVol.muted;
+	      options.volume = receiverVol.level;
+	    }
+
+	    this.player.tech_.setup_(options);
+	    this.player.on(['adstart', 'adend'], this.toggleProgressControl);
+	  };
+
+	  _proto.evaluateAdState = function evaluateAdState() {
+	    var mediaSession = this.castSession().getMediaSession();
+	    var inAdBreak = mediaSession.customData && mediaSession.customData.inAdBreak || false;
+
+	    if (inAdBreak && !this.onAdMode) {
+	      this.player.ads.startLinearAdMode();
+	      this.onAdMode = true;
+	    }
+
+	    if (!inAdBreak && this.onAdMode) {
+	      this.player.ads.endLinearAdMode();
+	      this.onAdMode = false;
+	    }
+	  };
+
+	  _proto.stopVideo = function stopVideo() {
+	    if (this.player.tech_ && this.player.tech_.remotePlayerController_) {
+	      this.player.tech_.stop();
+	    }
+	  }
+	  /**
+	   * Reset the sender side so that it continues playing the video where
+	   * the chromecast left off. Also removes the overlay from the player.
+	   */
+	  ;
+
+	  _proto.stop = function stop() {
+	    var _this5 = this;
+
+	    if (!this.player) {
+	      return;
+	    }
+
+	    this.log_('stopping');
+	    this.player.removeClass('vjs-chromecast-receiver-connecting');
+	    this.player.removeClass('vjs-chromecast-receiver-connected');
+
+	    if (this.oldTechOrder_) {
+	      this.player.options_.techOrder = this.oldTechOrder_;
+	    } // if we errored before switching tech
+
+
+	    if (!this.player.tech_ || !this.player.tech_.remotePlayer) {
+	      this.player.removeClass('vjs-waiting');
+	      return;
+	    }
+
+	    var remotePlayer = this.player.tech_.remotePlayer() || this.player.tech_.savedPlayerState();
+
+	    if (!remotePlayer) {
+	      return;
+	    }
+
+	    var options = {
+	      muted: remotePlayer.isMuted,
+	      currentTime: remotePlayer.currentTime,
+	      volume: remotePlayer.volumeLevel,
+	      source: this.player.currentSource(),
+	      ended: this.player.ended(),
+	      activeTrackIds: this.castSession().getMediaSession().activeTrackIds
+	    }; // for SSAI we need to tranform a bit the source information before to load it again into the player
+
+	    if (this.player.usingPlugin('ssai') && options.source.vmap) {
+	      options.source.src = options.source.vmap;
+	      options.source.type = videojs__default['default'].getPlugin('ssai').MIME_TYPE;
+	    }
+
+	    if (this.player.eme) {
+	      // When switching to ChromecastTech original video element
+	      // is removed so we need to re-initialise eme plugin
+	      this.player.eme(this.emeOptions_);
+	    }
+
+	    var dontPlay = function dontPlay() {
+	      return _this5.player.pause();
+	    };
+
+	    this.player.tech_.clearTracks(['audio', 'video', 'text']); // dont allow the player to play, so many things try as soon as it gets a source
+	    // again
+
+	    this.player.on('play', dontPlay);
+	    this.log_('setting source to ', options.source); // this.player.isReady_ = false;
+
+	    this.player.src(options.source); // Once we have the source loaded into the player, now let's try to load again
+	    // any remote track from the catalog data
+
+	    var rawData = this.player.catalog.getLastData();
+	    var catalogTracks = this.player.catalog.transformVideoResponse(rawData, {}).textTracks || [];
+	    catalogTracks.forEach(function (t) {
+	      if (t.label !== 'thumbnails') {
+	        _this5.player.addRemoteTextTrack(t);
+	      }
+	    }); // Now let's transform the remoteTracks into the original tracks.
+	    // Sometimes there's a mismatch in the order of the tracks used at the Receiver and we need to find the
+	    // tracks by it's original track id
+
+	    var remoteTracks = this.castSession().getMediaSession().media.tracks || [];
+	    this.player.one('loadedmetadata', function () {
+	      var selectedTracks = options.activeTrackIds.map(function (id) {
+	        return remoteTracks[id - 1].trackContentId;
+	      });
+
+	      _this5.log_('restoring selected tracks', selectedTracks);
+
+	      getFullTrackList(_this5.player.textTracks(), _this5.player.audioTracks()).forEach(function (t) {
+	        if (selectedTracks.includes(t.id)) {
+	          if (t.hasOwnProperty('mode')) {
+	            t.mode = 'showing';
+	          } else {
+	            t.enabled = true;
+	          }
+	        }
+	      });
+	    });
+	    this.player.one('ready', function () {
+	      var tech = _this5.player.tech_;
+
+	      _this5.player.hasStarted(true);
+
+	      _this5.log_('pausing tech');
+
+	      _this5.player.pause();
+
+	      _this5.log_("restoring current time to " + options.currentTime);
+
+	      if (_this5.player.usingPlugin('ssai') && _this5.player.ssai().state.enabled) {
+	        _this5.player.ssai().seekInContentTime(options.currentTime);
+	      } else {
+	        tech.setCurrentTime(options.currentTime);
+	      }
+
+	      _this5.log_("restoring muted to " + options.muted);
+
+	      tech.setMuted(options.muted);
+
+	      _this5.log_("restoring volume to " + options.volume);
+
+	      tech.setVolume(options.volume);
+
+	      _this5.player.setTimeout(function () {
+	        _this5.player.off('play', dontPlay);
+
+	        _this5.player.trigger('pause');
+	      }, 50);
+	    });
+	    this.player.off(['adstart', 'adend'], this.toggleProgressControl);
+
+	    if (this.heartbeat) {
+	      // We init heartbeat to give back the control of stream concurrency calls to player.
+	      this.heartbeat.init();
+	    }
+	  };
+
+	  _proto.toggleProgressControl_ = function toggleProgressControl_() {
+	    var controlBar = this.player.getChild('controlBar');
+	    var progressControl = controlBar && controlBar.getChild('progressControl');
+
+	    if (progressControl && typeof progressControl.enabled !== 'function') {
+	      return;
+	    }
+
+	    if (progressControl.enabled()) {
+	      progressControl.disable();
+	    } else {
+	      progressControl.enable();
+	    }
+	  }
+	  /**
+	   * Do anything specific to session disconnect
+	   */
+	  ;
+
+	  _proto.handleDisconnected = function handleDisconnected() {
+	    this.stop();
+
+	    if (this.overlay_) {
+	      this.player.removeChild(this.overlay_);
+	      this.overlay_.dispose();
+	      this.overlay_ = null;
+	    }
+
+	    if (this.fsToggleIndex_ !== -1 && !this.player.controlBar.getChild('FullscreenToggle')) {
+	      this.player.controlBar.addChild('FullscreenToggle', {}, this.fsToggleIndex_);
+	    }
+
+	    this.off(this.player, 'fullscreenchange', this.hideFullscreen_);
+	  }
+	  /**
+	   * A helper function over the chromecast api to get the
+	   * current cast device information.
+	   *
+	   * @return {Object|undefined}
+	   *          The Cast device object or undefined
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.CastSession?hl=vi#getCastDevice
+	   * @see https://developers.google.com/cast/docs/reference/chrome/chrome.cast.Receiver?hl=vi
+	   */
+	  ;
+
+	  _proto.castDevice = function castDevice() {
+	    if (!this.castSession()) {
+	      return;
+	    }
+
+	    return this.castSession().getCastDevice();
+	  }
+	  /**
+	   * A helper function over the chromecast api to get the current
+	   * cast session from the castContext
+	   *
+	   * @return {Object|undefined}
+	   *          The current cast session or undefined
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.CastContext?hl=vi#getCurrentSession
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.CastSession?hl=vi
+	   */
+	  ;
+
+	  _proto.castSession = function castSession() {
+	    if (!this.castContext()) {
+	      return;
+	    }
+
+	    return this.castContext().getCurrentSession();
+	  }
+	  /**
+	   * A helper function over the chromecast api to get the current
+	   * cast context.
+	   *
+	   * @return {Object}
+	   *          The current cast context
+	   *
+	   * @see https://developers.google.com/cast/docs/reference/chrome/cast.framework.CastContext?hl=vi#CastContext
+	   */
+	  ;
+
+	  _proto.castContext = function castContext() {
+	    return window.cast.framework.CastContext.getInstance();
+	  }
+	  /**
+	   * A helper function over the chromecast api to get the current
+	   * media session from the cast session.
+	   *
+	   * @returns {Object}
+	   */
+	  ;
+
+	  _proto.castMediaSession = function castMediaSession() {
+	    if (!this.castSession()) {
+	      return;
+	    }
+
+	    return this.castSession().getMediaSession();
+	  }
+	  /**
+	   * A wrapper around the chromecast sendMessage function
+	   * that defaults to config.messageChannel
+	   *
+	   * @param {Object} message
+	   *        The message to send
+	   *
+	   * @param {string} message.type
+	   *        The type of message that is being sent
+	   *
+	   * @return {Promise}
+	   *          A promise that is fulfilled when the message is accepted
+	   */
+	  ;
+
+	  _proto.sendMessage = function sendMessage(message) {
+	    if (!this.castSession()) {
+	      return;
+	    }
+
+	    this.log_('Chromecast: Sending a message to the receiver', message);
+	    return this.castSession().sendMessage(config.messageChannel, message);
+	  }
+	  /**
+	   * An internal logging function, for debug/dev logging
+	   *
+	   * @private
+	   * @param {*} messages
+	   *        messages to log when debug logging is on
+	   */
+	  ;
+
+	  _proto.log_ = function log_() {
+	    if (!this.options.debug) {
+	      return;
+	    }
+
+	    for (var _len = arguments.length, messages = new Array(_len), _key = 0; _key < _len; _key++) {
+	      messages[_key] = arguments[_key];
+	    }
+
+	    messages.forEach(function (m) {
+	      return videojs__default['default'].log('Chromecast: ', m);
+	    });
+	  }
+	  /**
+	   * cleanup the plugin
+	   */
+	  ;
+
+	  _proto.dispose = function dispose() {
+	    _Plugin.prototype.dispose.call(this);
+
+	    if (!this.initialized_) {
+	      return;
+	    }
+
+	    this.stop();
+
+	    if (this.castContext()) {
+	      this.castContext().removeEventListener(window.cast.framework.CastContextEventType.SESSION_STATE_CHANGED, this.sessionStateEventListener_);
+	    }
+
+	    if (this.castSession()) {
+	      this.castSession().removeMessageListener(config.messageChannel, this.customMessageListener_);
+	    }
+	  };
+
+	  return ChromecastReceiver;
+	}(Plugin); // Register the plugin with video.js.
+
+
+	videojs__default['default'].registerPlugin('chromecastReceiver', ChromecastReceiver); // Include the version number.
+
+	ChromecastReceiver.VERSION = version; // Detect whether we are in a secure context. This is exposed only for testing
+	// purposes!
+
+	ChromecastReceiver._inSecureContext = function () {
+	  return window.isSecureContext || window.location.protocol === 'https:';
+	};
+
+	return ChromecastReceiver;
+
+})));
